@@ -1,0 +1,178 @@
+%python
+# Databricks notebook or PySpark script
+
+# Install the faker library
+%pip install faker
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, monotonically_increasing_id, year, month, expr
+from pyspark.sql.types import *
+from faker import Faker
+import random
+from datetime import datetime, timedelta
+
+fake = Faker()
+spark = SparkSession.builder.appName("HR OLAP Data Generation").getOrCreate()
+
+# Ustawienia optymalizacji rozmiaru plików ~128 MB
+spark.conf.set("spark.sql.files.maxPartitionBytes", 134217728)  # 128 MB
+spark.conf.set("spark.sql.parquet.block.size", 134217728)
+
+# Helper function to create DataFrame from fake data
+def create_dimension_df(schema, num_records, generator_func):
+    data = [generator_func(i) for i in range(num_records)]
+    return spark.createDataFrame(data, schema=schema)
+
+# dim_date - last 3 years of dates
+start_date = datetime.today() - timedelta(days=3*365)
+date_list = [(int(dt.strftime("%Y%m%d")), dt.strftime("%Y-%m-%d"), dt.year, dt.month, dt.day) for dt in [start_date + timedelta(days=i) for i in range(3*365)]]
+dim_date_schema = StructType([
+    StructField("date_id", IntegerType()),
+    StructField("date", StringType()),
+    StructField("year", IntegerType()),
+    StructField("month", IntegerType()),
+    StructField("day", IntegerType()),
+])
+dim_date_df = spark.createDataFrame(date_list, dim_date_schema)
+dim_date_df.write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_date", compression="snappy")
+
+# Dimension generators
+
+def generate_dim_employee(i):
+    return (i, fake.first_name(), fake.last_name(), fake.job(), fake.job())
+
+def generate_dim_department(i):
+    return (i, fake.bs(), fake.company_suffix())
+
+def generate_dim_location(i):
+    return (i, fake.city(), fake.country())
+
+def generate_dim_job(i):
+    return (i, fake.job(), fake.catch_phrase())
+
+def generate_dim_project(i):
+    return (i, fake.bothify(text='PRJ-####'), fake.company())
+
+def generate_dim_manager(i):
+    return (i, fake.name(), fake.phone_number(), fake.email())
+
+def generate_dim_time_type(i):
+    return (i, random.choice(["Full-Time", "Part-Time", "Internship", "Contract"]))
+
+# Schemas
+
+dim_employee_schema = StructType([
+    StructField("employee_id", IntegerType()),
+    StructField("first_name", StringType()),
+    StructField("last_name", StringType()),
+    StructField("job_title", StringType()),
+    StructField("department", StringType()),
+])
+
+dim_department_schema = StructType([
+    StructField("department_id", IntegerType()),
+    StructField("department_name", StringType()),
+    StructField("description", StringType()),
+])
+
+dim_location_schema = StructType([
+    StructField("location_id", IntegerType()),
+    StructField("city", StringType()),
+    StructField("country", StringType()),
+])
+
+dim_job_schema = StructType([
+    StructField("job_id", IntegerType()),
+    StructField("job_title", StringType()),
+    StructField("job_description", StringType()),
+])
+
+dim_project_schema = StructType([
+    StructField("project_id", IntegerType()),
+    StructField("project_code", StringType()),
+    StructField("project_name", StringType()),
+])
+
+dim_manager_schema = StructType([
+    StructField("manager_id", IntegerType()),
+    StructField("name", StringType()),
+    StructField("phone", StringType()),
+    StructField("email", StringType()),
+])
+
+dim_time_type_schema = StructType([
+    StructField("time_type_id", IntegerType()),
+    StructField("time_type", StringType()),
+])
+
+# Create and write dimension tables
+
+dim_employee_df = create_dimension_df(dim_employee_schema, 200000, generate_dim_employee)
+dim_employee_df.printSchema()
+dim_employee_df.write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_employee", compression="snappy")
+
+create_dimension_df(dim_department_schema, 100000, generate_dim_department) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_department", compression="snappy")
+
+create_dimension_df(dim_location_schema, 100000, generate_dim_location) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_location", compression="snappy")
+
+create_dimension_df(dim_job_schema, 100000, generate_dim_job) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_job", compression="snappy")
+
+create_dimension_df(dim_project_schema, 100000, generate_dim_project) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_project", compression="snappy")
+
+create_dimension_df(dim_manager_schema, 100000, generate_dim_manager) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_manager", compression="snappy")
+
+create_dimension_df(dim_time_type_schema, 100000, generate_dim_time_type) \
+    .write.mode("overwrite").parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_dim_table/dim_time_type", compression="snappy")
+
+# Sample FK IDs for fact table
+employee_ids = list(range(200000))
+date_ids = [row.date_id for row in dim_date_df.select("date_id").collect()]
+
+# fact_employee_activity
+fact_schema = StructType([
+    StructField("activity_id", LongType()),
+    StructField("employee_id", IntegerType()),
+    StructField("date_id", IntegerType()),
+    StructField("hours_worked", FloatType()),
+    StructField("activity_type", StringType()),
+    StructField("project_code", StringType()),
+    StructField("status", StringType()),
+    StructField("overtime", BooleanType()),
+    StructField("start_time", TimestampType()),
+    StructField("end_time", TimestampType()),
+    StructField("comment", StringType()),
+])
+
+def generate_fact_record(i):
+    eid = random.choice(employee_ids)
+    did = random.choice(date_ids)
+    start = fake.date_time_this_year()
+    end = fake.date_time_between(start, "+1d")
+    return (
+        i,
+        eid,
+        did,
+        round(random.uniform(1, 12), 2),
+        random.choice(["Work", "Training", "Meeting", "Leave"]),
+        fake.bothify(text='PRJ-####'),
+        random.choice(["Completed", "In Progress", "Cancelled"]),
+        random.choice([True, False]),
+        start,
+        end,
+        fake.sentence(nb_words=10)
+    )
+
+fact_rdd = spark.sparkContext.parallelize(range(20000000)).map(generate_fact_record)
+fact_df = spark.createDataFrame(fact_rdd, fact_schema)
+fact_df = fact_df.withColumn("year", expr("int(date_id / 10000)"))
+fact_df = fact_df.withColumn("month", expr("int((date_id % 10000) / 100)"))
+fact_df = fact_df.repartition(780, "year", "month")
+
+fact_df.write.mode("overwrite") \
+    .partitionBy("year", "month") \
+    .parquet("abfss://raw@optimization0adls.dfs.core.windows.net/hr_fact_table", compression="snappy")

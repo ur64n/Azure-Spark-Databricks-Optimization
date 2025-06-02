@@ -1,0 +1,1 @@
+display(dbutils.fs.ls("abfss://raw@optimization0adls.dfs.core.windows.net"))

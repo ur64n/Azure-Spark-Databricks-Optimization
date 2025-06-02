@@ -13,3 +13,5 @@ As part of the solution, a range of optimization techniques were applied, includ
 All of the above were guided by runtime metrics and statistics available in the Spark UI.
 
 ![Architecture Diagram](https://github.com/ur64n/Azure-Spark-Databricks-Optimization/blob/main/img/join%20code%20in%20databricks%20and%20parametrized%20join%20activity%20in%20adf.png)
+
+The code in the hr-parametrized-pipelines folder defines pipeline activities that support dynamic parameterization, enabling the construction of arbitrary datasets from fact and dimension tables, prepared for further analytical processing.
